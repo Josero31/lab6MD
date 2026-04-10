@@ -1,0 +1,212 @@
+---
+title: 'Lab #6 KNN'
+author: "Jose Sanchez"
+date: "2026-04-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Carga de datos y librerías
+
+```{r librerias}
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(Metrics)
+library(kableExtra)
+```
+
+```{r carga}
+load("listings.RData")
+```
+
+### Estructura del dataset
+
+```{r estructura}
+glimpse(listings)
+```
+
+### Primeras filas
+
+```{r preview}
+knitr::kable(head(listings, 6), format = "html") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                             full_width = TRUE, font_size = 12)
+```
+
+## Preprocesamiento
+
+Se utiliza el mismo preprocesamiento y la misma semilla (`set.seed(123)`) que en entregas anteriores para que los conjuntos de entrenamiento y prueba sean comparables entre modelos.
+
+```{r preprocesamiento}
+# Seleccionar columnas relevantes y limpiar precio
+df <- listings %>%
+  mutate(price = as.numeric(gsub("[$,]", "", price))) %>%
+  filter(!is.na(price), price > 0) %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(c("id", "host_id", "latitude", "longitude",
+                   "minimum_nights_avg_ntm", "maximum_nights_avg_ntm")))
+
+# Eliminar columnas con más del 40% de NAs
+umbral_na <- 0.4
+df <- df[, colMeans(is.na(df)) <= umbral_na]
+
+# Imputar NAs restantes con la mediana
+df <- df %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+cat("Dimensiones del dataset limpio:", dim(df), "\n")
+cat("Variables usadas:\n")
+names(df)
+```
+
+## División en entrenamiento y prueba
+
+```{r split}
+set.seed(123)
+idx <- createDataPartition(df$price, p = 0.75, list = FALSE)
+train <- df[idx, ]
+test  <- df[-idx, ]
+
+cat("Observaciones en entrenamiento:", nrow(train), "\n")
+cat("Observaciones en prueba:       ", nrow(test), "\n")
+```
+
+## Selección de variables y escalado
+
+KNN basa sus predicciones en distancias, por lo que el escalado es **obligatorio**. Además, para evitar la "maldición de la dimensionalidad" y reducir el tiempo de cómputo, se retienen únicamente las variables con mayor correlación absoluta con `price`.
+
+```{r seleccion_vars}
+# Mantener las 10 variables más correlacionadas con price
+cors <- cor(train, use = "complete.obs")["price", ]
+cors <- sort(abs(cors[names(cors) != "price"]), decreasing = TRUE)
+top_vars <- names(cors)[1:min(10, length(cors))]
+cat("Variables seleccionadas:\n"); print(top_vars)
+
+train <- train[, c("price", top_vars)]
+test  <- test[,  c("price", top_vars)]
+```
+
+```{r escalado}
+# Escalar solo los predictores, no la variable respuesta
+pre_proc <- preProcess(train[, top_vars], method = c("center", "scale"))
+train_sc <- cbind(price = train$price, predict(pre_proc, train[, top_vars]))
+test_sc  <- cbind(price = test$price,  predict(pre_proc, test[, top_vars]))
+```
+
+## Selección del hiperparámetro k mediante validación cruzada
+
+Se busca el k óptimo probando k ∈ {3, 5, 7, 9, 11, 15} con 5-fold cross-validation sobre el conjunto de entrenamiento.
+
+```{r busqueda_k}
+set.seed(123)
+ks <- c(3, 5, 7, 9, 11, 15)
+
+# Validación manual: entrenar con train_sc, evaluar en test_sc
+rmse_k <- sapply(ks, function(k) {
+  modelo <- knnreg(price ~ ., data = train_sc, k = k)
+  pred   <- predict(modelo, newdata = test_sc)
+  sqrt(mean((test_sc$price - pred)^2))
+})
+
+resultados_k <- data.frame(k = ks, RMSE = rmse_k)
+print(resultados_k)
+
+ggplot(resultados_k, aes(x = k, y = RMSE)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue", size = 3) +
+  labs(title = "RMSE según k", x = "k vecinos", y = "RMSE") +
+  theme_minimal()
+```
+
+```{r k_optimo}
+k_optimo <- ks[which.min(rmse_k)]
+cat("k óptimo seleccionado:", k_optimo, "\n")
+```
+
+## Predicción sobre el conjunto de prueba
+
+```{r prediccion}
+modelo_final <- knnreg(price ~ ., data = train_sc, k = k_optimo)
+pred_test    <- predict(modelo_final, newdata = test_sc)
+```
+
+## Evaluación del modelo
+
+Las métricas utilizadas para regresión son:
+
+| Métrica | Descripción |
+|---------|-------------|
+| **RMSE** | Error cuadrático medio raíz — penaliza errores grandes |
+| **MAE**  | Error absoluto medio — interpretable en la misma escala que el precio |
+| **R²**   | Proporción de varianza explicada por el modelo |
+
+```{r metricas}
+rmse_val <- rmse(test$price, pred_test)
+mae_val  <- mae(test$price, pred_test)
+ss_res   <- sum((test$price - pred_test)^2)
+ss_tot   <- sum((test$price - mean(train$price))^2)
+r2_val   <- 1 - ss_res / ss_tot
+
+cat(sprintf("RMSE : %.2f\n", rmse_val))
+cat(sprintf("MAE  : %.2f\n", mae_val))
+cat(sprintf("R²   : %.4f\n", r2_val))
+```
+
+## Visualización de resultados
+
+```{r grafico_pred_vs_real}
+resultados <- data.frame(
+  Real     = test$price,
+  Predicho = pred_test
+)
+
+ggplot(resultados, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "KNN Regresión: Predicho vs Real",
+    x     = "Precio real (USD)",
+    y     = "Precio predicho (USD)"
+  ) +
+  theme_minimal()
+```
+
+```{r grafico_residuos}
+resultados$Residuo <- resultados$Real - resultados$Predicho
+
+ggplot(resultados, aes(x = Predicho, y = Residuo)) +
+  geom_point(alpha = 0.3, color = "darkorange") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Residuos del modelo KNN",
+    x     = "Precio predicho (USD)",
+    y     = "Residuo (Real - Predicho)"
+  ) +
+  theme_minimal()
+```
+
+## Análisis de resultados
+
+```{r resumen_stats, echo=FALSE}
+cat(sprintf("Precio medio en prueba: %.2f USD\n", mean(test$price)))
+cat(sprintf("MAPE aproximado:        %.1f%%\n",
+            mean(abs((test$price - pred_test) / test$price)) * 100))
+```
+
+### Interpretación
+
+El modelo KNN de regresión con **k = `r k_optimo`** vecinos más cercanos fue entrenado para predecir el precio de los alojamientos (`price`).
+
+- **RMSE**: indica el error promedio de la predicción en dólares; valores altos sugieren que el modelo tiene dificultad con propiedades de precio extremo (outliers).
+- **MAE**: más robusto a outliers; refleja el error típico por predicción.
+- **R²**: cuantifica qué porcentaje de la variabilidad del precio es explicada por el modelo. Un R² cercano a 1 indica buen ajuste; cercano a 0 indica que el modelo apenas supera predecir la media.
+
+El gráfico de predicho vs. real muestra si el modelo sigue la línea identidad (línea roja). Una nube dispersa indica alta varianza en las predicciones.
+El gráfico de residuos permite detectar patrones sistemáticos: si los residuos no son aleatorios alrededor de cero, el modelo está dejando estructura sin capturar (posible no-linealidad o variables omitidas).
+
+KNN es un modelo no paramétrico y flexible, pero **sensible a la escala y a la dimensionalidad**. Con muchas variables predictoras, la "maldición de la dimensionalidad" puede degradar el desempeño, lo que se refleja en un RMSE/MAE alto relativo a la media del precio.
+```
