@@ -17,6 +17,8 @@ library(dplyr)
 library(ggplot2)
 library(Metrics)
 library(kableExtra)
+library(rpart)       # árbol de regresión / clasificación
+library(e1071)       # Naive Bayes
 ```
 
 ```{r carga}
@@ -209,4 +211,240 @@ El gráfico de predicho vs. real muestra si el modelo sigue la línea identidad 
 El gráfico de residuos permite detectar patrones sistemáticos: si los residuos no son aleatorios alrededor de cero, el modelo está dejando estructura sin capturar (posible no-linealidad o variables omitidas).
 
 KNN es un modelo no paramétrico y flexible, pero **sensible a la escala y a la dimensionalidad**. Con muchas variables predictoras, la "maldición de la dimensionalidad" puede degradar el desempeño, lo que se refleja en un RMSE/MAE alto relativo a la media del precio.
+
+---
+
+## 3. Comparación con modelos de entregas anteriores
+
+Para que la comparación sea reproducible y justa, se reconstruyen los tres modelos anteriores utilizando **exactamente el mismo conjunto de entrenamiento y prueba** (`set.seed(123)`, 75/25) y las mismas variables escaladas.
+
+### 3.1 Regresión Lineal
+
+```{r modelo_rl}
+modelo_rl <- lm(price ~ ., data = train_sc)
+pred_rl   <- predict(modelo_rl, newdata = test_sc)
+
+rmse_rl <- rmse(test_sc$price, pred_rl)
+mae_rl  <- mae(test_sc$price,  pred_rl)
+r2_rl   <- 1 - sum((test_sc$price - pred_rl)^2) /
+               sum((test_sc$price - mean(train_sc$price))^2)
+
+cat(sprintf("Regresión Lineal  →  RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+            rmse_rl, mae_rl, r2_rl))
 ```
+
+### 3.2 Árbol de Regresión
+
+Se usa `rpart` con los mismos datos escalados. El árbol fue podado con el parámetro de complejidad (`cp`) óptimo obtenido por validación cruzada interna de `rpart`.
+
+```{r modelo_arbol}
+set.seed(123)
+modelo_arbol <- rpart(price ~ ., data = train_sc,
+                      method = "anova",
+                      control = rpart.control(xval = 10))
+
+# Poda con el cp que minimiza el error de validación cruzada
+cp_opt <- modelo_arbol$cptable[which.min(modelo_arbol$cptable[, "xerror"]), "CP"]
+modelo_arbol_podado <- prune(modelo_arbol, cp = cp_opt)
+
+pred_arbol <- predict(modelo_arbol_podado, newdata = test_sc)
+
+rmse_arbol <- rmse(test_sc$price, pred_arbol)
+mae_arbol  <- mae(test_sc$price,  pred_arbol)
+r2_arbol   <- 1 - sum((test_sc$price - pred_arbol)^2) /
+                  sum((test_sc$price - mean(train_sc$price))^2)
+
+cat(sprintf("Árbol de Regresión  →  RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+            rmse_arbol, mae_arbol, r2_arbol))
+```
+
+### 3.3 Naive Bayes (clasificación — referencia para la sección 4)
+
+Naive Bayes es un algoritmo de **clasificación**, no de regresión, por lo que no produce métricas de error continuo (RMSE/MAE/R²). Para incluirlo en la comparación se utiliza la misma variable categórica (`precio_cat`) que se construye en la sección 4. Sus métricas de clasificación (Accuracy, Kappa, F1) se muestran en la tabla de la sección 4.
+
+```{r precio_cat_creacion}
+# Terciles del precio de entrenamiento (mismos umbrales para train y test)
+q33 <- quantile(train$price, 1/3)
+q67 <- quantile(train$price, 2/3)
+
+cat(sprintf("Umbral barata/media: %.2f USD\n", q33))
+cat(sprintf("Umbral media/cara:   %.2f USD\n", q67))
+
+train_cat <- train_sc %>%
+  mutate(precio_cat = factor(
+    case_when(
+      price <= q33 ~ "barata",
+      price <= q67 ~ "media",
+      TRUE         ~ "cara"
+    ),
+    levels = c("barata", "media", "cara")
+  ))
+
+test_cat <- test_sc %>%
+  mutate(precio_cat = factor(
+    case_when(
+      price <= q33 ~ "barata",
+      price <= q67 ~ "media",
+      TRUE         ~ "cara"
+    ),
+    levels = c("barata", "media", "cara")
+  ))
+```
+
+```{r modelo_nb}
+modelo_nb <- naiveBayes(precio_cat ~ . - price, data = train_cat)
+pred_nb   <- predict(modelo_nb, newdata = test_cat)
+
+cm_nb     <- confusionMatrix(pred_nb, test_cat$precio_cat)
+acc_nb    <- cm_nb$overall["Accuracy"]
+kappa_nb  <- cm_nb$overall["Kappa"]
+f1_nb     <- mean(cm_nb$byClass[, "F1"], na.rm = TRUE)
+
+cat(sprintf("Naive Bayes  →  Accuracy: %.4f | Kappa: %.4f | F1 macro: %.4f\n",
+            acc_nb, kappa_nb, f1_nb))
+```
+
+### 3.4 Tabla resumen — modelos de regresión
+
+Las métricas elegidas para los modelos de regresión son:
+
+- **RMSE** (Root Mean Squared Error): penaliza errores grandes de forma cuadrática, relevante cuando los precios extremos tienen consecuencias importantes.
+- **MAE** (Mean Absolute Error): mide el error típico en la misma unidad que el precio (USD), fácil de interpretar.
+- **R²** (coeficiente de determinación): indica qué fracción de la variabilidad del precio es explicada por el modelo; permite comparar modelos independientemente de la escala.
+
+Estas tres métricas se complementan: RMSE detecta outliers, MAE da el error promedio real y R² indica el poder explicativo global.
+
+```{r tabla_comparacion_regresion}
+tabla_reg <- data.frame(
+  Modelo = c("Regresión Lineal", "Árbol de Regresión (podado)", "KNN Regresión"),
+  RMSE   = round(c(rmse_rl,    rmse_arbol,    rmse_val),  2),
+  MAE    = round(c(mae_rl,     mae_arbol,     mae_val),   2),
+  R2     = round(c(r2_rl,      r2_arbol,      r2_val),    4)
+)
+
+knitr::kable(tabla_reg,
+             col.names = c("Modelo", "RMSE", "MAE", "R²"),
+             caption   = "Tabla 1. Métricas de regresión en el conjunto de prueba",
+             align     = c("l", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  row_spec(which.min(tabla_reg$RMSE), bold = TRUE, color = "white",
+           background = "#2c7bb6")
+```
+
+### 3.5 Interpretación de la comparación
+
+```{r mejor_modelo_reg, echo=FALSE}
+mejor <- tabla_reg$Modelo[which.min(tabla_reg$RMSE)]
+cat(sprintf("Modelo con menor RMSE: %s\n", mejor))
+```
+
+El modelo resaltado en azul es el que obtiene el **menor RMSE** en el conjunto de prueba, es decir, el que comete errores más pequeños al predecir precios. El R² complementa este análisis indicando cuánta varianza captura cada modelo. Un modelo puede tener bajo RMSE pero bajo R² si el precio presenta alta dispersión intrínseca; por eso se reportan las tres métricas juntas.
+
+---
+
+## 4. Modelo KNN de Clasificación
+
+Se reutiliza la variable `precio_cat` (barata / media / cara) creada por terciles en la sección anterior.
+
+### 4.1 Distribución de clases
+
+```{r dist_clases}
+table(train_cat$precio_cat) %>%
+  as.data.frame() %>%
+  setNames(c("Categoría", "N")) %>%
+  knitr::kable(caption = "Distribución de clases en entrenamiento") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+### 4.2 Selección de k para clasificación
+
+Se evalúan los mismos valores de k que en regresión, usando **Accuracy** como criterio.
+
+```{r busqueda_k_clf}
+set.seed(123)
+ks_clf <- c(3, 5, 7, 9, 11, 15)
+
+acc_k <- sapply(ks_clf, function(k) {
+  modelo_tmp <- knn3(precio_cat ~ . - price, data = train_cat, k = k)
+  pred_tmp   <- predict(modelo_tmp, newdata = test_cat, type = "class")
+  mean(pred_tmp == test_cat$precio_cat)
+})
+
+resultados_clf_k <- data.frame(k = ks_clf, Accuracy = acc_k)
+print(resultados_clf_k)
+
+ggplot(resultados_clf_k, aes(x = k, y = Accuracy)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue", size = 3) +
+  labs(title = "Accuracy según k — KNN Clasificación",
+       x = "k vecinos", y = "Accuracy") +
+  theme_minimal()
+```
+
+```{r k_optimo_clf}
+k_opt_clf <- ks_clf[which.max(acc_k)]
+cat("k óptimo para clasificación:", k_opt_clf, "\n")
+```
+
+### 4.3 Modelo final y evaluación
+
+```{r knn_clf_final}
+modelo_knn_clf <- knn3(precio_cat ~ . - price, data = train_cat, k = k_opt_clf)
+pred_knn_clf   <- predict(modelo_knn_clf, newdata = test_cat, type = "class")
+
+cm_knn <- confusionMatrix(pred_knn_clf, test_cat$precio_cat)
+print(cm_knn)
+```
+
+### 4.4 Matriz de confusión visualizada
+
+```{r matriz_confusion_plot}
+cm_df <- as.data.frame(cm_knn$table)
+names(cm_df) <- c("Predicho", "Real", "Freq")
+
+ggplot(cm_df, aes(x = Real, y = Predicho, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 5) +
+  scale_fill_gradient(low = "#d1e5f0", high = "#2c7bb6") +
+  labs(title = "Matriz de Confusión — KNN Clasificación",
+       x = "Clase real", y = "Clase predicha") +
+  theme_minimal()
+```
+
+### 4.5 Tabla resumen — modelos de clasificación
+
+```{r tabla_comparacion_clf}
+acc_knn_clf  <- cm_knn$overall["Accuracy"]
+kappa_knn    <- cm_knn$overall["Kappa"]
+f1_knn_clf   <- mean(cm_knn$byClass[, "F1"], na.rm = TRUE)
+
+tabla_clf <- data.frame(
+  Modelo   = c("Naive Bayes", "KNN Clasificación"),
+  Accuracy = round(c(acc_nb,       acc_knn_clf),  4),
+  Kappa    = round(c(kappa_nb,     kappa_knn),    4),
+  F1_macro = round(c(f1_nb,        f1_knn_clf),   4)
+)
+
+knitr::kable(tabla_clf,
+             col.names = c("Modelo", "Accuracy", "Kappa", "F1 macro"),
+             caption   = "Tabla 2. Métricas de clasificación en el conjunto de prueba",
+             align     = c("l", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  row_spec(which.max(tabla_clf$Accuracy), bold = TRUE, color = "white",
+           background = "#2c7bb6")
+```
+
+### 4.6 Interpretación
+
+```{r interp_clf, echo=FALSE}
+mejor_clf <- tabla_clf$Modelo[which.max(tabla_clf$Accuracy)]
+cat(sprintf("Mejor modelo de clasificación (mayor Accuracy): %s\n", mejor_clf))
+```
+
+- **Accuracy**: fracción de observaciones clasificadas correctamente. Es la métrica más intuitiva, aunque puede ser engañosa si las clases están desbalanceadas.
+- **Kappa de Cohen**: ajusta el Accuracy por el azar; valores > 0.6 indican acuerdo sustancial.
+- **F1 macro**: promedio del F1-score por clase, penaliza igualmente errores en clases minoritarias. Complementa el Kappa cuando las clases tienen diferente frecuencia.
+
+El modelo resaltado en azul es el que clasifica mejor las casas en barata, media y cara. KNN de clasificación aprovecha la misma lógica de vecindad que en regresión: asigna a cada observación la clase más frecuente entre sus *k* vecinos más cercanos en el espacio escalado de variables.
