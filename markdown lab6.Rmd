@@ -1,6 +1,6 @@
 ---
 title: 'Lab #6 KNN'
-author: "Jose Sanchez"
+author: "Jose Sanchez, Roberto Najera y Andre Pivaral "
 date: "2026-04-10"
 output: html_document
 ---
@@ -448,3 +448,202 @@ cat(sprintf("Mejor modelo de clasificación (mayor Accuracy): %s\n", mejor_clf))
 - **F1 macro**: promedio del F1-score por clase, penaliza igualmente errores en clases minoritarias. Complementa el Kappa cuando las clases tienen diferente frecuencia.
 
 El modelo resaltado en azul es el que clasifica mejor las casas en barata, media y cara. KNN de clasificación aprovecha la misma lógica de vecindad que en regresión: asigna a cada observación la clase más frecuente entre sus *k* vecinos más cercanos en el espacio escalado de variables.
+
+---
+
+## 5. Eficiencia de los algoritmos sobre el conjunto de prueba
+
+En esta sección se consolida la evaluación de **todos los modelos** aplicados al conjunto de prueba y se determina cuál algoritmo es más eficiente tanto para la tarea de **predicción (regresión)** como para la de **clasificación**.
+
+### 5.1 Eficiencia en regresión (predicción de precio)
+
+Los modelos de regresión generan un valor numérico continuo de precio. Se comparan con tres métricas complementarias calculadas sobre el mismo `test_sc`:
+
+```{r eficiencia_regresion}
+# ── Recalcular predicciones de todos los modelos de regresión ──────────────
+pred_knn_reg   <- predict(modelo_final,        newdata = test_sc)
+pred_rl_v2     <- predict(modelo_rl,           newdata = test_sc)
+pred_arbol_v2  <- predict(modelo_arbol_podado, newdata = test_sc)
+
+# Función auxiliar para calcular métricas
+calc_metricas_reg <- function(real, pred, nombre_modelo) {
+  rmse_v <- sqrt(mean((real - pred)^2))
+  mae_v  <- mean(abs(real - pred))
+  r2_v   <- 1 - sum((real - pred)^2) / sum((real - mean(real))^2)
+  mape_v <- mean(abs((real - pred) / real)) * 100
+  data.frame(
+    Modelo = nombre_modelo,
+    RMSE   = round(rmse_v, 2),
+    MAE    = round(mae_v,  2),
+    R2     = round(r2_v,   4),
+    MAPE   = round(mape_v, 2)
+  )
+}
+
+tabla_efic_reg <- rbind(
+  calc_metricas_reg(test_sc$price, pred_rl_v2,    "Regresión Lineal"),
+  calc_metricas_reg(test_sc$price, pred_arbol_v2, "Árbol de Regresión (podado)"),
+  calc_metricas_reg(test_sc$price, pred_knn_reg,  paste0("KNN Regresión (k=", k_optimo, ")"))
+)
+
+# Destacar la fila con menor RMSE
+mejor_reg_idx <- which.min(tabla_efic_reg$RMSE)
+
+knitr::kable(tabla_efic_reg,
+             col.names = c("Modelo", "RMSE", "MAE", "R²", "MAPE (%)"),
+             caption   = "Tabla 3. Eficiencia de modelos de regresión sobre el conjunto de prueba",
+             align     = c("l", "r", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  row_spec(mejor_reg_idx, bold = TRUE, color = "white", background = "#1a9641")
+```
+
+```{r grafico_eficiencia_reg}
+# Gráfico de barras comparativo (RMSE)
+ggplot(tabla_efic_reg, aes(x = reorder(Modelo, RMSE), y = RMSE, fill = Modelo)) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  geom_text(aes(label = RMSE), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = c("#74add1", "#fdae61", "#1a9641")) +
+  labs(title  = "Comparación de RMSE — Modelos de Regresión",
+       subtitle = "Menor RMSE = mejor eficiencia predictiva",
+       x = NULL, y = "RMSE (USD)") +
+  theme_minimal(base_size = 12) +
+  expand_limits(y = max(tabla_efic_reg$RMSE) * 1.15)
+```
+
+```{r grafico_eficiencia_r2}
+# Gráfico de barras comparativo (R²)
+ggplot(tabla_efic_reg, aes(x = reorder(Modelo, R2), y = R2, fill = Modelo)) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  geom_text(aes(label = R2), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = c("#74add1", "#fdae61", "#1a9641")) +
+  labs(title  = "Comparación de R² — Modelos de Regresión",
+       subtitle = "Mayor R² = mayor poder explicativo",
+       x = NULL, y = "R²") +
+  theme_minimal(base_size = 12) +
+  expand_limits(y = min(max(tabla_efic_reg$R2) * 1.15, 1))
+```
+
+### 5.2 Eficiencia en clasificación (categoría de precio)
+
+Los modelos de clasificación asignan cada alojamiento a una de tres categorías (barata / media / cara). Las métricas de evaluación son:
+
+| Métrica | Descripción |
+|---------|-------------|
+| **Accuracy** | Proporción de observaciones clasificadas correctamente |
+| **Kappa** | Accuracy ajustado por azar; > 0.6 = acuerdo sustancial |
+| **F1 macro** | Promedio del F1-score por clase; robusto ante desbalance |
+| **Sensibilidad** | Proporción de verdaderos positivos por clase |
+
+```{r eficiencia_clasificacion}
+# ── Recalcular predicciones de clasificación ───────────────────────────────
+pred_knn_clf_v2 <- predict(modelo_knn_clf, newdata = test_cat, type = "class")
+pred_nb_v2      <- predict(modelo_nb,      newdata = test_cat)
+
+# Confusion matrices
+cm_knn_v2 <- confusionMatrix(pred_knn_clf_v2, test_cat$precio_cat)
+cm_nb_v2  <- confusionMatrix(pred_nb_v2,      test_cat$precio_cat)
+
+# Función auxiliar para extraer métricas de clasificación
+calc_metricas_clf <- function(cm, nombre_modelo) {
+  data.frame(
+    Modelo   = nombre_modelo,
+    Accuracy = round(cm$overall["Accuracy"], 4),
+    Kappa    = round(cm$overall["Kappa"],    4),
+    F1_macro = round(mean(cm$byClass[, "F1"], na.rm = TRUE), 4),
+    Sens_media = round(mean(cm$byClass[, "Sensitivity"], na.rm = TRUE), 4)
+  )
+}
+
+tabla_efic_clf <- rbind(
+  calc_metricas_clf(cm_nb_v2,  "Naive Bayes"),
+  calc_metricas_clf(cm_knn_v2, paste0("KNN Clasificación (k=", k_opt_clf, ")"))
+)
+
+mejor_clf_idx <- which.max(tabla_efic_clf$Accuracy)
+
+knitr::kable(tabla_efic_clf,
+             col.names = c("Modelo", "Accuracy", "Kappa", "F1 macro", "Sens. media"),
+             caption   = "Tabla 4. Eficiencia de modelos de clasificación sobre el conjunto de prueba",
+             align     = c("l", "r", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  row_spec(mejor_clf_idx, bold = TRUE, color = "white", background = "#1a9641")
+```
+
+```{r grafico_eficiencia_clf}
+# Reformatear para gráfico
+library(tidyr)
+tabla_clf_long <- tabla_efic_clf %>%
+  tidyr::pivot_longer(cols = c(Accuracy, Kappa, F1_macro, Sens_media),
+                      names_to = "Metrica", values_to = "Valor")
+
+ggplot(tabla_clf_long, aes(x = Metrica, y = Valor, fill = Modelo)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = round(Valor, 3)),
+            position = position_dodge(width = 0.6),
+            vjust = -0.4, size = 3) +
+  scale_fill_manual(values = c("#fdae61", "#1a9641")) +
+  labs(title    = "Comparación de métricas — Modelos de Clasificación",
+       subtitle = "Mayor valor = mayor eficiencia clasificatoria",
+       x = NULL, y = "Valor", fill = "Modelo") +
+  theme_minimal(base_size = 12) +
+  expand_limits(y = 1.05)
+```
+
+### 5.3 Matrices de confusión detalladas
+
+```{r cm_detalle_knn}
+cat("=== KNN Clasificación ===\n")
+print(cm_knn_v2$table)
+cat(sprintf("\nAccuracy : %.4f\nKappa    : %.4f\nF1 macro : %.4f\n",
+            cm_knn_v2$overall["Accuracy"],
+            cm_knn_v2$overall["Kappa"],
+            mean(cm_knn_v2$byClass[, "F1"], na.rm = TRUE)))
+```
+
+```{r cm_detalle_nb}
+cat("=== Naive Bayes ===\n")
+print(cm_nb_v2$table)
+cat(sprintf("\nAccuracy : %.4f\nKappa    : %.4f\nF1 macro : %.4f\n",
+            cm_nb_v2$overall["Accuracy"],
+            cm_nb_v2$overall["Kappa"],
+            mean(cm_nb_v2$byClass[, "F1"], na.rm = TRUE)))
+```
+
+### 5.4 Conclusión de eficiencia
+
+```{r conclusion_eficiencia, echo=FALSE}
+# Regresión
+mejor_reg_nombre <- tabla_efic_reg$Modelo[mejor_reg_idx]
+rmse_min <- tabla_efic_reg$RMSE[mejor_reg_idx]
+r2_max   <- tabla_efic_reg$R2[mejor_reg_idx]
+
+# Clasificación
+mejor_clf_nombre <- tabla_efic_clf$Modelo[mejor_clf_idx]
+acc_max  <- tabla_efic_clf$Accuracy[mejor_clf_idx]
+kap_max  <- tabla_efic_clf$Kappa[mejor_clf_idx]
+
+cat("── PREDICCIÓN (Regresión) ──────────────────────────────────\n")
+cat(sprintf("Modelo más eficiente : %s\n", mejor_reg_nombre))
+cat(sprintf("RMSE mínimo          : %.2f USD\n", rmse_min))
+cat(sprintf("R² máximo            : %.4f\n\n", r2_max))
+
+cat("── CLASIFICACIÓN ───────────────────────────────────────────\n")
+cat(sprintf("Modelo más eficiente : %s\n", mejor_clf_nombre))
+cat(sprintf("Accuracy             : %.4f\n", acc_max))
+cat(sprintf("Kappa                : %.4f\n", kap_max))
+```
+
+**Tarea de predicción (regresión):**
+El modelo resaltado en verde en la Tabla 3 es el más eficiente para estimar el precio numérico de un alojamiento. Un RMSE bajo indica que las predicciones se acercan más al precio real; un R² alto confirma que el modelo captura una mayor proporción de la variabilidad del precio.
+
+**Tarea de clasificación:**
+El modelo resaltado en verde en la Tabla 4 es el más eficiente para categorizar alojamientos en barata, media o cara. Un Accuracy y Kappa altos indican que el modelo clasifica correctamente la mayoría de observaciones, más allá de lo que se esperaría por azar. El F1 macro garantiza que el buen desempeño no se concentra solo en la clase mayoritaria.
+
+**Limitaciones observadas:**
+- KNN es sensible a la escala y a la dimensionalidad; el escalado previo es imprescindible.
+- Con datos de precios altamente sesgados (muchos alojamientos baratos, pocos muy caros), el RMSE puede ser elevado aunque el modelo funcione bien en el rango central.
+- Naive Bayes asume independencia entre variables predictoras, lo que puede perjudicar su rendimiento cuando las variables están correlacionadas (como es el caso en datos de Airbnb).
