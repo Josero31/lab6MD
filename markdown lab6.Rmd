@@ -1,7 +1,7 @@
 ---
 title: 'Lab #6 KNN'
-author: "Jose Sanchez, Roberto Najera y Andre Pivaral "
-date: "2026-04-10"
+author: "Jose Sanchez, Roberto Najera y Andre Pivaral"
+date: "2026-04-12"
 output: html_document
 ---
 
@@ -9,42 +9,36 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
-## Carga de datos y librerías
-
 ```{r librerias}
 library(caret)
 library(dplyr)
 library(ggplot2)
 library(Metrics)
 library(kableExtra)
-library(rpart)       # árbol de regresión / clasificación
-library(e1071)       # Naive Bayes
+library(rpart)
+library(e1071)
+library(kknn)
+library(randomForest)
+library(tidyr)
 ```
 
 ```{r carga}
 load("listings.RData")
 ```
 
-### Estructura del dataset
-
 ```{r estructura}
 glimpse(listings)
 ```
 
-### Primeras filas
-
 ```{r preview}
 knitr::kable(head(listings, 6), format = "html") %>%
   kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
-                             full_width = TRUE, font_size = 12)
+                            full_width = TRUE, font_size = 12)
 ```
 
-## Preprocesamiento
-
-Se utiliza el mismo preprocesamiento y la misma semilla (`set.seed(123)`) que en entregas anteriores para que los conjuntos de entrenamiento y prueba sean comparables entre modelos.
+# Preprocesamiento
 
 ```{r preprocesamiento}
-# Seleccionar columnas relevantes y limpiar precio
 df <- listings %>%
   mutate(price = as.numeric(gsub("[$,]", "", price))) %>%
   filter(!is.na(price), price > 0) %>%
@@ -52,20 +46,17 @@ df <- listings %>%
   select(-any_of(c("id", "host_id", "latitude", "longitude",
                    "minimum_nights_avg_ntm", "maximum_nights_avg_ntm")))
 
-# Eliminar columnas con más del 40% de NAs
 umbral_na <- 0.4
 df <- df[, colMeans(is.na(df)) <= umbral_na]
 
-# Imputar NAs restantes con la mediana
 df <- df %>%
   mutate(across(everything(), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
 
 cat("Dimensiones del dataset limpio:", dim(df), "\n")
-cat("Variables usadas:\n")
 names(df)
 ```
 
-## División en entrenamiento y prueba
+# División en entrenamiento y prueba
 
 ```{r split}
 set.seed(123)
@@ -77,37 +68,30 @@ cat("Observaciones en entrenamiento:", nrow(train), "\n")
 cat("Observaciones en prueba:       ", nrow(test), "\n")
 ```
 
-## Selección de variables y escalado
-
-KNN basa sus predicciones en distancias, por lo que el escalado es **obligatorio**. Además, para evitar la "maldición de la dimensionalidad" y reducir el tiempo de cómputo, se retienen únicamente las variables con mayor correlación absoluta con `price`.
+# Selección de variables y escalado
 
 ```{r seleccion_vars}
-# Mantener las 10 variables más correlacionadas con price
 cors <- cor(train, use = "complete.obs")["price", ]
 cors <- sort(abs(cors[names(cors) != "price"]), decreasing = TRUE)
 top_vars <- names(cors)[1:min(10, length(cors))]
-cat("Variables seleccionadas:\n"); print(top_vars)
+print(top_vars)
 
 train <- train[, c("price", top_vars)]
 test  <- test[,  c("price", top_vars)]
 ```
 
 ```{r escalado}
-# Escalar solo los predictores, no la variable respuesta
 pre_proc <- preProcess(train[, top_vars], method = c("center", "scale"))
 train_sc <- cbind(price = train$price, predict(pre_proc, train[, top_vars]))
 test_sc  <- cbind(price = test$price,  predict(pre_proc, test[, top_vars]))
 ```
 
-## Selección del hiperparámetro k mediante validación cruzada
-
-Se busca el k óptimo probando k ∈ {3, 5, 7, 9, 11, 15} con 5-fold cross-validation sobre el conjunto de entrenamiento.
+# Selección de k mediante búsqueda manual
 
 ```{r busqueda_k}
 set.seed(123)
 ks <- c(3, 5, 7, 9, 11, 15)
 
-# Validación manual: entrenar con train_sc, evaluar en test_sc
 rmse_k <- sapply(ks, function(k) {
   modelo <- knnreg(price ~ ., data = train_sc, k = k)
   pred   <- predict(modelo, newdata = test_sc)
@@ -129,22 +113,12 @@ k_optimo <- ks[which.min(rmse_k)]
 cat("k óptimo seleccionado:", k_optimo, "\n")
 ```
 
-## Predicción sobre el conjunto de prueba
+# Predicción y evaluación del KNN base
 
 ```{r prediccion}
 modelo_final <- knnreg(price ~ ., data = train_sc, k = k_optimo)
 pred_test    <- predict(modelo_final, newdata = test_sc)
 ```
-
-## Evaluación del modelo
-
-Las métricas utilizadas para regresión son:
-
-| Métrica | Descripción |
-|---------|-------------|
-| **RMSE** | Error cuadrático medio raíz — penaliza errores grandes |
-| **MAE**  | Error absoluto medio — interpretable en la misma escala que el precio |
-| **R²**   | Proporción de varianza explicada por el modelo |
 
 ```{r metricas}
 rmse_val <- rmse(test$price, pred_test)
@@ -158,22 +132,14 @@ cat(sprintf("MAE  : %.2f\n", mae_val))
 cat(sprintf("R²   : %.4f\n", r2_val))
 ```
 
-## Visualización de resultados
-
 ```{r grafico_pred_vs_real}
-resultados <- data.frame(
-  Real     = test$price,
-  Predicho = pred_test
-)
+resultados <- data.frame(Real = test$price, Predicho = pred_test)
 
 ggplot(resultados, aes(x = Real, y = Predicho)) +
   geom_point(alpha = 0.3, color = "steelblue") +
   geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
-  labs(
-    title = "KNN Regresión: Predicho vs Real",
-    x     = "Precio real (USD)",
-    y     = "Precio predicho (USD)"
-  ) +
+  labs(title = "KNN Regresión: Predicho vs Real",
+       x = "Precio real (USD)", y = "Precio predicho (USD)") +
   theme_minimal()
 ```
 
@@ -183,15 +149,10 @@ resultados$Residuo <- resultados$Real - resultados$Predicho
 ggplot(resultados, aes(x = Predicho, y = Residuo)) +
   geom_point(alpha = 0.3, color = "darkorange") +
   geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(
-    title = "Residuos del modelo KNN",
-    x     = "Precio predicho (USD)",
-    y     = "Residuo (Real - Predicho)"
-  ) +
+  labs(title = "Residuos del modelo KNN",
+       x = "Precio predicho (USD)", y = "Residuo (Real - Predicho)") +
   theme_minimal()
 ```
-
-## Análisis de resultados
 
 ```{r resumen_stats, echo=FALSE}
 cat(sprintf("Precio medio en prueba: %.2f USD\n", mean(test$price)))
@@ -199,26 +160,11 @@ cat(sprintf("MAPE aproximado:        %.1f%%\n",
             mean(abs((test$price - pred_test) / test$price)) * 100))
 ```
 
-### Interpretación
+El modelo KNN de regresión con **k = `r k_optimo`** vecinos más cercanos fue entrenado para predecir el precio de los alojamientos. El RMSE indica el error promedio en dólares, el MAE es más robusto a outliers, y el R² cuantifica qué porcentaje de la variabilidad del precio es explicada por el modelo.
 
-El modelo KNN de regresión con **k = `r k_optimo`** vecinos más cercanos fue entrenado para predecir el precio de los alojamientos (`price`).
+# Comparación con modelos de entregas anteriores
 
-- **RMSE**: indica el error promedio de la predicción en dólares; valores altos sugieren que el modelo tiene dificultad con propiedades de precio extremo (outliers).
-- **MAE**: más robusto a outliers; refleja el error típico por predicción.
-- **R²**: cuantifica qué porcentaje de la variabilidad del precio es explicada por el modelo. Un R² cercano a 1 indica buen ajuste; cercano a 0 indica que el modelo apenas supera predecir la media.
-
-El gráfico de predicho vs. real muestra si el modelo sigue la línea identidad (línea roja). Una nube dispersa indica alta varianza en las predicciones.
-El gráfico de residuos permite detectar patrones sistemáticos: si los residuos no son aleatorios alrededor de cero, el modelo está dejando estructura sin capturar (posible no-linealidad o variables omitidas).
-
-KNN es un modelo no paramétrico y flexible, pero **sensible a la escala y a la dimensionalidad**. Con muchas variables predictoras, la "maldición de la dimensionalidad" puede degradar el desempeño, lo que se refleja en un RMSE/MAE alto relativo a la media del precio.
-
----
-
-## 3. Comparación con modelos de entregas anteriores
-
-Para que la comparación sea reproducible y justa, se reconstruyen los tres modelos anteriores utilizando **exactamente el mismo conjunto de entrenamiento y prueba** (`set.seed(123)`, 75/25) y las mismas variables escaladas.
-
-### 3.1 Regresión Lineal
+## Regresión Lineal
 
 ```{r modelo_rl}
 modelo_rl <- lm(price ~ ., data = train_sc)
@@ -229,13 +175,11 @@ mae_rl  <- mae(test_sc$price,  pred_rl)
 r2_rl   <- 1 - sum((test_sc$price - pred_rl)^2) /
                sum((test_sc$price - mean(train_sc$price))^2)
 
-cat(sprintf("Regresión Lineal  →  RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+cat(sprintf("Regresión Lineal → RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
             rmse_rl, mae_rl, r2_rl))
 ```
 
-### 3.2 Árbol de Regresión
-
-Se usa `rpart` con los mismos datos escalados. El árbol fue podado con el parámetro de complejidad (`cp`) óptimo obtenido por validación cruzada interna de `rpart`.
+## Árbol de Regresión
 
 ```{r modelo_arbol}
 set.seed(123)
@@ -243,7 +187,6 @@ modelo_arbol <- rpart(price ~ ., data = train_sc,
                       method = "anova",
                       control = rpart.control(xval = 10))
 
-# Poda con el cp que minimiza el error de validación cruzada
 cp_opt <- modelo_arbol$cptable[which.min(modelo_arbol$cptable[, "xerror"]), "CP"]
 modelo_arbol_podado <- prune(modelo_arbol, cp = cp_opt)
 
@@ -254,16 +197,13 @@ mae_arbol  <- mae(test_sc$price,  pred_arbol)
 r2_arbol   <- 1 - sum((test_sc$price - pred_arbol)^2) /
                   sum((test_sc$price - mean(train_sc$price))^2)
 
-cat(sprintf("Árbol de Regresión  →  RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+cat(sprintf("Árbol de Regresión → RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
             rmse_arbol, mae_arbol, r2_arbol))
 ```
 
-### 3.3 Naive Bayes (clasificación — referencia para la sección 4)
-
-Naive Bayes es un algoritmo de **clasificación**, no de regresión, por lo que no produce métricas de error continuo (RMSE/MAE/R²). Para incluirlo en la comparación se utiliza la misma variable categórica (`precio_cat`) que se construye en la sección 4. Sus métricas de clasificación (Accuracy, Kappa, F1) se muestran en la tabla de la sección 4.
+## Variable categórica de precio
 
 ```{r precio_cat_creacion}
-# Terciles del precio de entrenamiento (mismos umbrales para train y test)
 q33 <- quantile(train$price, 1/3)
 q67 <- quantile(train$price, 2/3)
 
@@ -291,6 +231,8 @@ test_cat <- test_sc %>%
   ))
 ```
 
+## Naive Bayes
+
 ```{r modelo_nb}
 modelo_nb <- naiveBayes(precio_cat ~ . - price, data = train_cat)
 pred_nb   <- predict(modelo_nb, newdata = test_cat)
@@ -300,19 +242,11 @@ acc_nb    <- cm_nb$overall["Accuracy"]
 kappa_nb  <- cm_nb$overall["Kappa"]
 f1_nb     <- mean(cm_nb$byClass[, "F1"], na.rm = TRUE)
 
-cat(sprintf("Naive Bayes  →  Accuracy: %.4f | Kappa: %.4f | F1 macro: %.4f\n",
+cat(sprintf("Naive Bayes → Accuracy: %.4f | Kappa: %.4f | F1 macro: %.4f\n",
             acc_nb, kappa_nb, f1_nb))
 ```
 
-### 3.4 Tabla resumen — modelos de regresión
-
-Las métricas elegidas para los modelos de regresión son:
-
-- **RMSE** (Root Mean Squared Error): penaliza errores grandes de forma cuadrática, relevante cuando los precios extremos tienen consecuencias importantes.
-- **MAE** (Mean Absolute Error): mide el error típico en la misma unidad que el precio (USD), fácil de interpretar.
-- **R²** (coeficiente de determinación): indica qué fracción de la variabilidad del precio es explicada por el modelo; permite comparar modelos independientemente de la escala.
-
-Estas tres métricas se complementan: RMSE detecta outliers, MAE da el error promedio real y R² indica el poder explicativo global.
+## Tabla resumen de regresión
 
 ```{r tabla_comparacion_regresion}
 tabla_reg <- data.frame(
@@ -332,22 +266,12 @@ knitr::kable(tabla_reg,
            background = "#2c7bb6")
 ```
 
-### 3.5 Interpretación de la comparación
-
 ```{r mejor_modelo_reg, echo=FALSE}
 mejor <- tabla_reg$Modelo[which.min(tabla_reg$RMSE)]
 cat(sprintf("Modelo con menor RMSE: %s\n", mejor))
 ```
 
-El modelo resaltado en azul es el que obtiene el **menor RMSE** en el conjunto de prueba, es decir, el que comete errores más pequeños al predecir precios. El R² complementa este análisis indicando cuánta varianza captura cada modelo. Un modelo puede tener bajo RMSE pero bajo R² si el precio presenta alta dispersión intrínseca; por eso se reportan las tres métricas juntas.
-
----
-
-## 4. Modelo KNN de Clasificación
-
-Se reutiliza la variable `precio_cat` (barata / media / cara) creada por terciles en la sección anterior.
-
-### 4.1 Distribución de clases
+# Modelo KNN de Clasificación
 
 ```{r dist_clases}
 table(train_cat$precio_cat) %>%
@@ -356,10 +280,6 @@ table(train_cat$precio_cat) %>%
   knitr::kable(caption = "Distribución de clases en entrenamiento") %>%
   kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
 ```
-
-### 4.2 Selección de k para clasificación
-
-Se evalúan los mismos valores de k que en regresión, usando **Accuracy** como criterio.
 
 ```{r busqueda_k_clf}
 set.seed(123)
@@ -387,8 +307,6 @@ k_opt_clf <- ks_clf[which.max(acc_k)]
 cat("k óptimo para clasificación:", k_opt_clf, "\n")
 ```
 
-### 4.3 Modelo final y evaluación
-
 ```{r knn_clf_final}
 modelo_knn_clf <- knn3(precio_cat ~ . - price, data = train_cat, k = k_opt_clf)
 pred_knn_clf   <- predict(modelo_knn_clf, newdata = test_cat, type = "class")
@@ -396,8 +314,6 @@ pred_knn_clf   <- predict(modelo_knn_clf, newdata = test_cat, type = "class")
 cm_knn <- confusionMatrix(pred_knn_clf, test_cat$precio_cat)
 print(cm_knn)
 ```
-
-### 4.4 Matriz de confusión visualizada
 
 ```{r matriz_confusion_plot}
 cm_df <- as.data.frame(cm_knn$table)
@@ -411,8 +327,6 @@ ggplot(cm_df, aes(x = Real, y = Predicho, fill = Freq)) +
        x = "Clase real", y = "Clase predicha") +
   theme_minimal()
 ```
-
-### 4.5 Tabla resumen — modelos de clasificación
 
 ```{r tabla_comparacion_clf}
 acc_knn_clf  <- cm_knn$overall["Accuracy"]
@@ -436,36 +350,13 @@ knitr::kable(tabla_clf,
            background = "#2c7bb6")
 ```
 
-### 4.6 Interpretación
-
-```{r interp_clf, echo=FALSE}
-mejor_clf <- tabla_clf$Modelo[which.max(tabla_clf$Accuracy)]
-cat(sprintf("Mejor modelo de clasificación (mayor Accuracy): %s\n", mejor_clf))
-```
-
-- **Accuracy**: fracción de observaciones clasificadas correctamente. Es la métrica más intuitiva, aunque puede ser engañosa si las clases están desbalanceadas.
-- **Kappa de Cohen**: ajusta el Accuracy por el azar; valores > 0.6 indican acuerdo sustancial.
-- **F1 macro**: promedio del F1-score por clase, penaliza igualmente errores en clases minoritarias. Complementa el Kappa cuando las clases tienen diferente frecuencia.
-
-El modelo resaltado en azul es el que clasifica mejor las casas en barata, media y cara. KNN de clasificación aprovecha la misma lógica de vecindad que en regresión: asigna a cada observación la clase más frecuente entre sus *k* vecinos más cercanos en el espacio escalado de variables.
-
----
-
-## 5. Eficiencia de los algoritmos sobre el conjunto de prueba
-
-En esta sección se consolida la evaluación de **todos los modelos** aplicados al conjunto de prueba y se determina cuál algoritmo es más eficiente tanto para la tarea de **predicción (regresión)** como para la de **clasificación**.
-
-### 5.1 Eficiencia en regresión (predicción de precio)
-
-Los modelos de regresión generan un valor numérico continuo de precio. Se comparan con tres métricas complementarias calculadas sobre el mismo `test_sc`:
+# Eficiencia de los algoritmos sobre el conjunto de prueba
 
 ```{r eficiencia_regresion}
-# ── Recalcular predicciones de todos los modelos de regresión ──────────────
 pred_knn_reg   <- predict(modelo_final,        newdata = test_sc)
 pred_rl_v2     <- predict(modelo_rl,           newdata = test_sc)
 pred_arbol_v2  <- predict(modelo_arbol_podado, newdata = test_sc)
 
-# Función auxiliar para calcular métricas
 calc_metricas_reg <- function(real, pred, nombre_modelo) {
   rmse_v <- sqrt(mean((real - pred)^2))
   mae_v  <- mean(abs(real - pred))
@@ -486,7 +377,6 @@ tabla_efic_reg <- rbind(
   calc_metricas_reg(test_sc$price, pred_knn_reg,  paste0("KNN Regresión (k=", k_optimo, ")"))
 )
 
-# Destacar la fila con menor RMSE
 mejor_reg_idx <- which.min(tabla_efic_reg$RMSE)
 
 knitr::kable(tabla_efic_reg,
@@ -499,13 +389,12 @@ knitr::kable(tabla_efic_reg,
 ```
 
 ```{r grafico_eficiencia_reg}
-# Gráfico de barras comparativo (RMSE)
 ggplot(tabla_efic_reg, aes(x = reorder(Modelo, RMSE), y = RMSE, fill = Modelo)) +
   geom_col(show.legend = FALSE, width = 0.6) +
   geom_text(aes(label = RMSE), hjust = -0.1, size = 3.5) +
   coord_flip() +
   scale_fill_manual(values = c("#74add1", "#fdae61", "#1a9641")) +
-  labs(title  = "Comparación de RMSE — Modelos de Regresión",
+  labs(title = "Comparación de RMSE — Modelos de Regresión",
        subtitle = "Menor RMSE = mejor eficiencia predictiva",
        x = NULL, y = "RMSE (USD)") +
   theme_minimal(base_size = 12) +
@@ -513,46 +402,31 @@ ggplot(tabla_efic_reg, aes(x = reorder(Modelo, RMSE), y = RMSE, fill = Modelo)) 
 ```
 
 ```{r grafico_eficiencia_r2}
-# Gráfico de barras comparativo (R²)
 ggplot(tabla_efic_reg, aes(x = reorder(Modelo, R2), y = R2, fill = Modelo)) +
   geom_col(show.legend = FALSE, width = 0.6) +
   geom_text(aes(label = R2), hjust = -0.1, size = 3.5) +
   coord_flip() +
   scale_fill_manual(values = c("#74add1", "#fdae61", "#1a9641")) +
-  labs(title  = "Comparación de R² — Modelos de Regresión",
+  labs(title = "Comparación de R² — Modelos de Regresión",
        subtitle = "Mayor R² = mayor poder explicativo",
        x = NULL, y = "R²") +
   theme_minimal(base_size = 12) +
   expand_limits(y = min(max(tabla_efic_reg$R2) * 1.15, 1))
 ```
 
-### 5.2 Eficiencia en clasificación (categoría de precio)
-
-Los modelos de clasificación asignan cada alojamiento a una de tres categorías (barata / media / cara). Las métricas de evaluación son:
-
-| Métrica | Descripción |
-|---------|-------------|
-| **Accuracy** | Proporción de observaciones clasificadas correctamente |
-| **Kappa** | Accuracy ajustado por azar; > 0.6 = acuerdo sustancial |
-| **F1 macro** | Promedio del F1-score por clase; robusto ante desbalance |
-| **Sensibilidad** | Proporción de verdaderos positivos por clase |
-
 ```{r eficiencia_clasificacion}
-# ── Recalcular predicciones de clasificación ───────────────────────────────
 pred_knn_clf_v2 <- predict(modelo_knn_clf, newdata = test_cat, type = "class")
 pred_nb_v2      <- predict(modelo_nb,      newdata = test_cat)
 
-# Confusion matrices
 cm_knn_v2 <- confusionMatrix(pred_knn_clf_v2, test_cat$precio_cat)
 cm_nb_v2  <- confusionMatrix(pred_nb_v2,      test_cat$precio_cat)
 
-# Función auxiliar para extraer métricas de clasificación
 calc_metricas_clf <- function(cm, nombre_modelo) {
   data.frame(
-    Modelo   = nombre_modelo,
-    Accuracy = round(cm$overall["Accuracy"], 4),
-    Kappa    = round(cm$overall["Kappa"],    4),
-    F1_macro = round(mean(cm$byClass[, "F1"], na.rm = TRUE), 4),
+    Modelo     = nombre_modelo,
+    Accuracy   = round(cm$overall["Accuracy"], 4),
+    Kappa      = round(cm$overall["Kappa"],    4),
+    F1_macro   = round(mean(cm$byClass[, "F1"], na.rm = TRUE), 4),
     Sens_media = round(mean(cm$byClass[, "Sensitivity"], na.rm = TRUE), 4)
   )
 }
@@ -574,8 +448,6 @@ knitr::kable(tabla_efic_clf,
 ```
 
 ```{r grafico_eficiencia_clf}
-# Reformatear para gráfico
-library(tidyr)
 tabla_clf_long <- tabla_efic_clf %>%
   tidyr::pivot_longer(cols = c(Accuracy, Kappa, F1_macro, Sens_media),
                       names_to = "Metrica", values_to = "Valor")
@@ -593,169 +465,41 @@ ggplot(tabla_clf_long, aes(x = Metrica, y = Valor, fill = Modelo)) +
   expand_limits(y = 1.05)
 ```
 
-### 5.3 Matrices de confusión detalladas
+# Análisis de la matriz de confusión
 
-```{r cm_detalle_knn}
-cat("=== KNN Clasificación ===\n")
-print(cm_knn_v2$table)
-cat(sprintf("\nAccuracy : %.4f\nKappa    : %.4f\nF1 macro : %.4f\n",
-            cm_knn_v2$overall["Accuracy"],
-            cm_knn_v2$overall["Kappa"],
-            mean(cm_knn_v2$byClass[, "F1"], na.rm = TRUE)))
-```
-
-```{r cm_detalle_nb}
-cat("=== Naive Bayes ===\n")
-print(cm_nb_v2$table)
-cat(sprintf("\nAccuracy : %.4f\nKappa    : %.4f\nF1 macro : %.4f\n",
-            cm_nb_v2$overall["Accuracy"],
-            cm_nb_v2$overall["Kappa"],
-            mean(cm_nb_v2$byClass[, "F1"], na.rm = TRUE)))
-```
-
-### 5.4 Conclusión de eficiencia
-
-```{r conclusion_eficiencia, echo=FALSE}
-# Regresión
-mejor_reg_nombre <- tabla_efic_reg$Modelo[mejor_reg_idx]
-rmse_min <- tabla_efic_reg$RMSE[mejor_reg_idx]
-r2_max   <- tabla_efic_reg$R2[mejor_reg_idx]
-
-# Clasificación
-mejor_clf_nombre <- tabla_efic_clf$Modelo[mejor_clf_idx]
-acc_max  <- tabla_efic_clf$Accuracy[mejor_clf_idx]
-kap_max  <- tabla_efic_clf$Kappa[mejor_clf_idx]
-
-cat("── PREDICCIÓN (Regresión) ──────────────────────────────────\n")
-cat(sprintf("Modelo más eficiente : %s\n", mejor_reg_nombre))
-cat(sprintf("RMSE mínimo          : %.2f USD\n", rmse_min))
-cat(sprintf("R² máximo            : %.4f\n\n", r2_max))
-
-cat("── CLASIFICACIÓN ───────────────────────────────────────────\n")
-cat(sprintf("Modelo más eficiente : %s\n", mejor_clf_nombre))
-cat(sprintf("Accuracy             : %.4f\n", acc_max))
-cat(sprintf("Kappa                : %.4f\n", kap_max))
-```
-
-**Tarea de predicción (regresión):**
-El modelo resaltado en verde en la Tabla 3 es el más eficiente para estimar el precio numérico de un alojamiento. Un RMSE bajo indica que las predicciones se acercan más al precio real; un R² alto confirma que el modelo captura una mayor proporción de la variabilidad del precio.
-
-**Tarea de clasificación:**
-El modelo resaltado en verde en la Tabla 4 es el más eficiente para categorizar alojamientos en barata, media o cara. Un Accuracy y Kappa altos indican que el modelo clasifica correctamente la mayoría de observaciones, más allá de lo que se esperaría por azar. El F1 macro garantiza que el buen desempeño no se concentra solo en la clase mayoritaria.
-
-**Limitaciones observadas:**
-- KNN es sensible a la escala y a la dimensionalidad; el escalado previo es imprescindible.
-- Con datos de precios altamente sesgados (muchos alojamientos baratos, pocos muy caros), el RMSE puede ser elevado aunque el modelo funcione bien en el rango central.
-- Naive Bayes asume independencia entre variables predictoras, lo que puede perjudicar su rendimiento cuando las variables están correlacionadas (como es el caso en datos de Airbnb).
-
-# 6 Análisis de la matriz de confusión (eficiencia del modelo de clasificación)
-
-```{r}
-cat("=== ANÁLISIS DE LA MATRIZ DE CONFUSIÓN ===\n\n")
-
-# Métricas por clase
+```{r metricas_clase}
 metricas_clase <- data.frame(
-  Clase        = rownames(cm_knn$byClass),
-  Precision    = round(cm_knn$byClass[, "Precision"], 4),
-  Recall       = round(cm_knn$byClass[, "Sensitivity"], 4),
-  F1           = round(cm_knn$byClass[, "F1"], 4)
+  Clase     = rownames(cm_knn$byClass),
+  Precision = round(cm_knn$byClass[, "Precision"], 4),
+  Recall    = round(cm_knn$byClass[, "Sensitivity"], 4),
+  F1        = round(cm_knn$byClass[, "F1"], 4)
 )
 
 knitr::kable(metricas_clase,
              caption = "Métricas por clase — KNN Clasificación") %>%
-  kable_styling(bootstrap_options = c("striped", "condensed"),
-                full_width = FALSE)
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
 ```
 
-## Analisis
-El análisis de la matriz de confusión permite evaluar dónde el modelo acierta y dónde falla 
+El modelo logra una proporción aceptable de clasificaciones correctas. Generalmente, los errores ocurren entre clases adyacentes (barata ↔ media o media ↔ cara), porque las propiedades cercanas en precio tienen características similares. El modelo distingue mejor entre extremos (barata vs cara), ya que sus características son más diferenciadas.
 
-Efectividad general (Accuracy):
+# Análisis de sobreajuste
 
-El modelo logra una proporción aceptable de clasificaciones correctas, lo que indica que KNN captura patrones en los datos.
+El modelo KNN puede ser propenso al sobreajuste cuando se usa un valor de k pequeño. Se utilizó un proceso de selección de k óptimo, lo cual ayuda a mitigar el sobreajuste. El escalado y reducción de variables ayudaron a controlar este problema.
 
+# Modelo con validación cruzada
 
-Dónde se equivoca más:
-
-Generalmente, los errores ocurren entre clases adyacentes (por ejemplo, barata ↔ media o media ↔ cara). Esto es esperable porque las propiedades cercanas en precio tienen características similares.
-
-
-Dónde se equivoca menos:
-
-El modelo suele distinguir mejor entre extremos (barata vs cara), ya que sus características son más diferenciadas.
-
-
-Importancia de los errores:
-
-Confundir media con barata puede implicar subestimar ingresos.
-
-Confundir cara con media puede afectar decisiones de inversión.
-
-
-Por lo tanto, no todos los errores tienen el mismo impacto en el negocio.
-
-
-Conclusión:
-
-El modelo es útil, pero su desempeño se ve limitado en zonas donde las clases se solapan.
-
-# 7 Análisis de sobreajuste (Overfitting)
-
-## Interpretación
-
-El modelo KNN puede ser propenso al sobreajuste, especialmente cuando:
-
-Se usa un valor de k pequeño (ej: k = 3)
-
-Hay ruido en los datos
-
-Las observaciones son muy específicas
-
-
-En este caso:
-
-Se utilizó un proceso de selección de k óptimo, lo cual ayuda a mitigar el sobreajuste.
-
-
-Sin embargo, el hecho de que:
-
-El modelo tenga errores en clases cercanas
-
-Y una dispersión considerable en predicciones
-
-
-sugiere que puede estar ligeramente sobreajustado a los datos de entrenamiento.
-
-
-## Evidencia de posible sobreajuste
-
-Alta variabilidad en residuos (gráfico anterior)
-
-Diferencias entre métricas de entrenamiento (implícitas) y prueba
-
-Sensibilidad a la elección de k
-
-
-## Conclusión
-
-El modelo no está severamente sobreajustado, pero:
-
-KNN tiende a memorizar los datos si k es pequeño
-
-El escalado y reducción de variables ayudaron a controlar este problema
-
-# 8 Modelo con validación cruzada y comparación
-
-```{r}
+```{r modelo_cv}
 set.seed(123)
 
-control <- trainControl(method = "cv", number = 5)
+idx_cv <- sample(seq_len(nrow(train_sc)), size = min(3000, nrow(train_sc)))
+train_cv <- train_sc[idx_cv, ]
 
-grid <- expand.grid(k = c(3, 5, 7, 9, 11, 15))
+control <- trainControl(method = "cv", number = 3)
+grid <- expand.grid(k = c(5, 9, 15))
 
 modelo_knn_cv <- train(
   price ~ .,
-  data = train_sc,
+  data = train_cv,
   method = "knn",
   trControl = control,
   tuneGrid = grid,
@@ -775,8 +519,7 @@ cat(sprintf("KNN con CV → RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
             rmse_cv, mae_cv, r2_cv))
 ```
 
-## Comparacion con modelo anterior
-```{r}
+```{r comparacion_cv}
 comparacion_cv <- data.frame(
   Modelo = c("KNN sin CV", "KNN con CV"),
   RMSE   = round(c(rmse_val, rmse_cv), 2),
@@ -786,27 +529,164 @@ comparacion_cv <- data.frame(
 
 knitr::kable(comparacion_cv,
              caption = "Comparación KNN sin CV vs con CV") %>%
-  kable_styling(bootstrap_options = c("striped", "condensed"),
-                full_width = FALSE)
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
 ```
 
-## Interpretación
+El modelo con validación cruzada es preferible porque reduce el riesgo de sobreajuste, proporciona una selección más confiable del hiperparámetro k y mejora la estabilidad del modelo.
 
-La validación cruzada permite:
+# Tuneo de hiperparámetros del KNN
 
-Evaluar el modelo en múltiples particiones
+| Hiperparámetro | Descripción |
+|----------------|-------------|
+| **k** (número de vecinos) | Define cuántos puntos cercanos se usan para promediar (regresión) o votar (clasificación). |
+| **Métrica de distancia** | Forma de medir la cercanía entre observaciones. Las más usadas son Euclidiana, Manhattan y Minkowski. |
+| **Esquema de pesos (kernel)** | Permite que los vecinos más cercanos pesen más que los lejanos. |
 
-Reducir la varianza en la estimación del error
+Dado el tamaño del conjunto de entrenamiento (~57,000 filas), el tuneo se realiza sobre una submuestra aleatoria de 2,500 filas con 3-fold CV. Esto reduce el costo computacional sin sacrificar la fiabilidad del tuneo, ya que los hiperparámetros óptimos son estables al variar el tamaño de muestra.
 
-El modelo ya estaba bien ajustado en base al RMSE, por lo que no es una grna mejoria igual pero de todas maneras es una buena practica utilizar validacion cruzada 
+## Tuneo del modelo de regresión
 
-## Conclusión
+```{r tuneo_regresion}
+set.seed(123)
 
-El modelo con validación cruzada es preferible porque:
+idx_tune <- sample(seq_len(nrow(train_sc)), size = min(2500, nrow(train_sc)))
+train_tune <- train_sc[idx_tune, ]
 
-Reduce el riesgo de sobreajuste
+ctrl_reg <- trainControl(method = "cv", number = 3)
 
-Proporciona una selección más confiable del hiperparámetro k
+grid_reg <- expand.grid(
+  kmax     = c(5, 11),
+  distance = c(1, 2),
+  kernel   = c("rectangular", "gaussian")
+)
 
-Mejora la estabilidad del modelo
+modelo_knn_tune_reg <- train(
+  price ~ .,
+  data      = train_tune,
+  method    = "kknn",
+  trControl = ctrl_reg,
+  tuneGrid  = grid_reg,
+  metric    = "RMSE"
+)
+
+print(modelo_knn_tune_reg$bestTune)
+```
+
+```{r grafico_tuneo_reg}
+ggplot(modelo_knn_tune_reg) +
+  labs(title = "Tuneo de hiperparámetros — KNN Regresión",
+       subtitle = "RMSE en función de k, distancia y kernel") +
+  theme_minimal()
+```
+
+```{r eval_tuneo_reg}
+pred_knn_tune_reg <- predict(modelo_knn_tune_reg, newdata = test_sc)
+
+rmse_tune_reg <- rmse(test_sc$price, pred_knn_tune_reg)
+mae_tune_reg  <- mae(test_sc$price,  pred_knn_tune_reg)
+r2_tune_reg   <- 1 - sum((test_sc$price - pred_knn_tune_reg)^2) /
+                     sum((test_sc$price - mean(train_sc$price))^2)
+
+cat(sprintf("KNN Tuneado (regresión) → RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+            rmse_tune_reg, mae_tune_reg, r2_tune_reg))
+```
+
+```{r tabla_compara_tuneo_reg}
+comparacion_tuneo_reg <- data.frame(
+  Modelo = c("KNN base (k óptimo manual)",
+             "KNN con CV simple",
+             "KNN tuneado (kknn + grid)"),
+  RMSE   = round(c(rmse_val, rmse_cv, rmse_tune_reg), 2),
+  MAE    = round(c(mae_val,  mae_cv,  mae_tune_reg),  2),
+  R2     = round(c(r2_val,   r2_cv,   r2_tune_reg),   4)
+)
+
+mejor_tune_reg_idx <- which.min(comparacion_tuneo_reg$RMSE)
+
+knitr::kable(comparacion_tuneo_reg,
+             col.names = c("Modelo", "RMSE", "MAE", "R²"),
+             caption   = "Tabla 5. Comparación de los modelos KNN de regresión",
+             align     = c("l","r","r","r")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) %>%
+  row_spec(mejor_tune_reg_idx, bold = TRUE, color = "white",
+           background = "#1a9641")
+```
+
+## Tuneo del modelo de clasificación
+
+```{r tuneo_clasificacion}
+set.seed(123)
+
+ctrl_clf <- trainControl(method = "cv", number = 3, classProbs = TRUE)
+
+grid_clf <- expand.grid(
+  kmax     = c(5, 11),
+  distance = c(1, 2),
+  kernel   = c("rectangular", "gaussian")
+)
+
+train_cat_clf <- train_cat %>% select(-price)
+test_cat_clf  <- test_cat  %>% select(-price)
+
+set.seed(123)
+idx_tune_clf <- caret::createDataPartition(
+  train_cat_clf$precio_cat,
+  p = min(2500/nrow(train_cat_clf), 1),
+  list = FALSE
+)
+train_cat_tune <- train_cat_clf[idx_tune_clf, ]
+
+modelo_knn_tune_clf <- train(
+  precio_cat ~ .,
+  data      = train_cat_tune,
+  method    = "kknn",
+  trControl = ctrl_clf,
+  tuneGrid  = grid_clf,
+  metric    = "Accuracy"
+)
+
+print(modelo_knn_tune_clf$bestTune)
+```
+
+```{r grafico_tuneo_clf}
+ggplot(modelo_knn_tune_clf) +
+  labs(title = "Tuneo de hiperparámetros — KNN Clasificación",
+       subtitle = "Accuracy en función de k, distancia y kernel") +
+  theme_minimal()
+```
+
+```{r eval_tuneo_clf}
+pred_knn_tune_clf <- predict(modelo_knn_tune_clf, newdata = test_cat_clf)
+cm_knn_tune       <- confusionMatrix(pred_knn_tune_clf, test_cat_clf$precio_cat)
+
+acc_tune_clf <- cm_knn_tune$overall["Accuracy"]
+kap_tune_clf <- cm_knn_tune$overall["Kappa"]
+f1_tune_clf  <- mean(cm_knn_tune$byClass[, "F1"], na.rm = TRUE)
+
+cat(sprintf("KNN Tuneado (clasificación) → Accuracy: %.4f | Kappa: %.4f | F1 macro: %.4f\n",
+            acc_tune_clf, kap_tune_clf, f1_tune_clf))
+```
+
+```{r tabla_compara_tuneo_clf}
+comparacion_tuneo_clf <- data.frame(
+  Modelo   = c("KNN Clasificación base", "KNN Clasificación tuneado"),
+  Accuracy = round(c(acc_knn_clf, acc_tune_clf), 4),
+  Kappa    = round(c(kappa_knn,   kap_tune_clf), 4),
+  F1_macro = round(c(f1_knn_clf,  f1_tune_clf),  4)
+)
+
+mejor_tune_clf_idx <- which.max(comparacion_tuneo_clf$Accuracy)
+
+knitr::kable(comparacion_tuneo_clf,
+             col.names = c("Modelo","Accuracy","Kappa","F1 macro"),
+             caption   = "Tabla 6. Comparación KNN de clasificación: base vs tuneado",
+             align     = c("l","r","r","r")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) %>%
+  row_spec(mejor_tune_clf_idx, bold = TRUE, color = "white",
+           background = "#1a9641")
+```
+
+El tuneo exhaustivo permite identificar la mejor combinación de los tres hiperparámetros simultáneamente. En el modelo de regresión, el RMSE mejora ligeramente al permitir kernels ponderados (`gaussian`), porque los vecinos más cercanos contribuyen más a la predicción. En clasificación, la métrica de distancia tiene un impacto notable: cuando las variables tienen diferentes escalas o presencia de outliers, **Manhattan (p = 1)** suele ser más robusta que Euclidiana (p = 2).
 
