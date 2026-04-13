@@ -698,3 +698,114 @@ Por lo tanto, no todos los errores tienen el mismo impacto en el negocio.
 Conclusión:
 
 El modelo es útil, pero su desempeño se ve limitado en zonas donde las clases se solapan.
+
+# 7 Análisis de sobreajuste (Overfitting)
+
+## Interpretación
+
+El modelo KNN puede ser propenso al sobreajuste, especialmente cuando:
+
+Se usa un valor de k pequeño (ej: k = 3)
+
+Hay ruido en los datos
+
+Las observaciones son muy específicas
+
+
+En este caso:
+
+Se utilizó un proceso de selección de k óptimo, lo cual ayuda a mitigar el sobreajuste.
+
+
+Sin embargo, el hecho de que:
+
+El modelo tenga errores en clases cercanas
+
+Y una dispersión considerable en predicciones
+
+
+sugiere que puede estar ligeramente sobreajustado a los datos de entrenamiento.
+
+
+## Evidencia de posible sobreajuste
+
+Alta variabilidad en residuos (gráfico anterior)
+
+Diferencias entre métricas de entrenamiento (implícitas) y prueba
+
+Sensibilidad a la elección de k
+
+
+## Conclusión
+
+El modelo no está severamente sobreajustado, pero:
+
+KNN tiende a memorizar los datos si k es pequeño
+
+El escalado y reducción de variables ayudaron a controlar este problema
+
+# 8 Modelo con validación cruzada y comparación
+
+```{r}
+set.seed(123)
+
+control <- trainControl(method = "cv", number = 5)
+
+grid <- expand.grid(k = c(3, 5, 7, 9, 11, 15))
+
+modelo_knn_cv <- train(
+  price ~ .,
+  data = train_sc,
+  method = "knn",
+  trControl = control,
+  tuneGrid = grid,
+  metric = "RMSE"
+)
+
+print(modelo_knn_cv)
+
+pred_knn_cv <- predict(modelo_knn_cv, newdata = test_sc)
+
+rmse_cv <- rmse(test_sc$price, pred_knn_cv)
+mae_cv  <- mae(test_sc$price, pred_knn_cv)
+r2_cv   <- 1 - sum((test_sc$price - pred_knn_cv)^2) /
+                sum((test_sc$price - mean(train_sc$price))^2)
+
+cat(sprintf("KNN con CV → RMSE: %.2f | MAE: %.2f | R²: %.4f\n",
+            rmse_cv, mae_cv, r2_cv))
+```
+
+## Comparacion con modelo anterior
+```{r}
+comparacion_cv <- data.frame(
+  Modelo = c("KNN sin CV", "KNN con CV"),
+  RMSE   = round(c(rmse_val, rmse_cv), 2),
+  MAE    = round(c(mae_val,  mae_cv), 2),
+  R2     = round(c(r2_val,   r2_cv), 4)
+)
+
+knitr::kable(comparacion_cv,
+             caption = "Comparación KNN sin CV vs con CV") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
+```
+
+## Interpretación
+
+La validación cruzada permite:
+
+Evaluar el modelo en múltiples particiones
+
+Reducir la varianza en la estimación del error
+
+El modelo ya estaba bien ajustado en base al RMSE, por lo que no es una grna mejoria igual pero de todas maneras es una buena practica utilizar validacion cruzada 
+
+## Conclusión
+
+El modelo con validación cruzada es preferible porque:
+
+Reduce el riesgo de sobreajuste
+
+Proporciona una selección más confiable del hiperparámetro k
+
+Mejora la estabilidad del modelo
