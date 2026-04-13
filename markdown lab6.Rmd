@@ -690,3 +690,119 @@ knitr::kable(comparacion_tuneo_clf,
 
 El tuneo exhaustivo permite identificar la mejor combinación de los tres hiperparámetros simultáneamente. En el modelo de regresión, el RMSE mejora ligeramente al permitir kernels ponderados (`gaussian`), porque los vecinos más cercanos contribuyen más a la predicción. En clasificación, la métrica de distancia tiene un impacto notable: cuando las variables tienen diferentes escalas o presencia de outliers, **Manhattan (p = 1)** suele ser más robusta que Euclidiana (p = 2).
 
+# Métrica de distancia óptima y análisis del valor de P
+
+| Valor de p | Métrica equivalente | Comportamiento |
+|------------|---------------------|----------------|
+| **p = 1** | Manhattan (City-block) | Suma de diferencias absolutas; robusta a outliers. |
+| **p = 2** | Euclidiana | Distancia geométrica clásica; sensible a la escala. |
+| **p = 3+** | Minkowski generalizada | Acentúa las dimensiones con mayor diferencia. |
+
+## Comparación sistemática del valor de p en regresión
+
+```{r analisis_p_regresion}
+set.seed(123)
+
+p_values <- c(1, 2, 3)
+
+k_best       <- modelo_knn_tune_reg$bestTune$kmax
+kernel_best  <- as.character(modelo_knn_tune_reg$bestTune$kernel)
+
+set.seed(123)
+idx_p_reg <- sample(seq_len(nrow(train_sc)), size = min(2500, nrow(train_sc)))
+train_p_reg <- train_sc[idx_p_reg, ]
+
+resultados_p_reg <- data.frame()
+
+for (p_v in p_values) {
+  modelo_p <- kknn(price ~ ., train = train_p_reg, test = test_sc,
+                   k = k_best, distance = p_v, kernel = kernel_best)
+  pred_p   <- modelo_p$fitted.values
+  rmse_p   <- sqrt(mean((test_sc$price - pred_p)^2))
+  mae_p    <- mean(abs(test_sc$price - pred_p))
+
+  resultados_p_reg <- rbind(resultados_p_reg,
+                            data.frame(p = p_v,
+                                       RMSE = round(rmse_p, 2),
+                                       MAE  = round(mae_p,  2)))
+}
+
+knitr::kable(resultados_p_reg,
+             caption = "RMSE y MAE en regresión según el valor de p",
+             align   = c("c","r","r")) %>%
+  kable_styling(bootstrap_options = c("striped","condensed"), full_width = FALSE) %>%
+  row_spec(which.min(resultados_p_reg$RMSE), bold = TRUE,
+           color = "white", background = "#1a9641")
+```
+
+```{r grafico_p_reg}
+ggplot(resultados_p_reg, aes(x = p, y = RMSE)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_text(aes(label = RMSE), vjust = -0.8, size = 3.2) +
+  labs(title    = "RMSE en función de p (Minkowski)",
+       subtitle = "Modelo KNN de regresión",
+       x = "Valor de p", y = "RMSE (USD)") +
+  theme_minimal() +
+  expand_limits(y = max(resultados_p_reg$RMSE) * 1.05)
+```
+
+## Comparación sistemática del valor de p en clasificación
+
+```{r analisis_p_clasificacion}
+set.seed(123)
+
+k_best_clf      <- modelo_knn_tune_clf$bestTune$kmax
+kernel_best_clf <- as.character(modelo_knn_tune_clf$bestTune$kernel)
+
+set.seed(123)
+idx_p_clf <- caret::createDataPartition(
+  train_cat_clf$precio_cat,
+  p = min(2500/nrow(train_cat_clf), 1),
+  list = FALSE
+)
+train_p_clf <- train_cat_clf[idx_p_clf, ]
+
+resultados_p_clf <- data.frame()
+
+for (p_v in p_values) {
+  modelo_pc <- kknn(precio_cat ~ ., train = train_p_clf, test = test_cat_clf,
+                    k = k_best_clf, distance = p_v, kernel = kernel_best_clf)
+  pred_pc   <- modelo_pc$fitted.values
+  acc_pc    <- mean(pred_pc == test_cat_clf$precio_cat)
+
+  resultados_p_clf <- rbind(resultados_p_clf,
+                            data.frame(p = p_v,
+                                       Accuracy = round(acc_pc, 4)))
+}
+
+knitr::kable(resultados_p_clf,
+             caption = "Accuracy en clasificación según el valor de p",
+             align   = c("c","r")) %>%
+  kable_styling(bootstrap_options = c("striped","condensed"), full_width = FALSE) %>%
+  row_spec(which.max(resultados_p_clf$Accuracy), bold = TRUE,
+           color = "white", background = "#1a9641")
+```
+
+```{r grafico_p_clf}
+ggplot(resultados_p_clf, aes(x = p, y = Accuracy)) +
+  geom_line(color = "darkorange", linewidth = 1) +
+  geom_point(color = "darkorange", size = 3) +
+  geom_text(aes(label = Accuracy), vjust = -0.8, size = 3.2) +
+  labs(title    = "Accuracy en función de p (Minkowski)",
+       subtitle = "Modelo KNN de clasificación",
+       x = "Valor de p", y = "Accuracy") +
+  theme_minimal() +
+  expand_limits(y = c(min(resultados_p_clf$Accuracy)*0.97,
+                      max(resultados_p_clf$Accuracy)*1.03))
+```
+
+```{r mejor_p, echo=FALSE}
+mejor_p_reg <- resultados_p_reg$p[which.min(resultados_p_reg$RMSE)]
+mejor_p_clf <- resultados_p_clf$p[which.max(resultados_p_clf$Accuracy)]
+cat(sprintf("Mejor valor de p (regresión)    : %d\n", mejor_p_reg))
+cat(sprintf("Mejor valor de p (clasificación): %d\n", mejor_p_clf))
+```
+
+La métrica resaltada en verde en cada tabla es la que produjo el mejor desempeño. En la mayoría de problemas con variables numéricas escaladas, la **distancia de Manhattan (p = 1)** o la **Euclidiana (p = 2)** suelen ser las más eficientes. Las variables predictoras del dataset son numéricas pero de naturaleza heterogénea (conteos discretos y ratios). La distancia de Manhattan trata cada dimensión de forma aditiva e independiente, lo que es coherente con esta heterogeneidad. Valores de p mayores a 2 amplifican las diferencias en la dimensión más extrema, lo que en presencia de ruido empeora la predicción.
+
