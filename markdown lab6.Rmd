@@ -647,3 +647,54 @@ El modelo resaltado en verde en la Tabla 4 es el más eficiente para categorizar
 - KNN es sensible a la escala y a la dimensionalidad; el escalado previo es imprescindible.
 - Con datos de precios altamente sesgados (muchos alojamientos baratos, pocos muy caros), el RMSE puede ser elevado aunque el modelo funcione bien en el rango central.
 - Naive Bayes asume independencia entre variables predictoras, lo que puede perjudicar su rendimiento cuando las variables están correlacionadas (como es el caso en datos de Airbnb).
+
+# 6 Análisis de la matriz de confusión (eficiencia del modelo de clasificación)
+
+```{r}
+cat("=== ANÁLISIS DE LA MATRIZ DE CONFUSIÓN ===\n\n")
+
+# Métricas por clase
+metricas_clase <- data.frame(
+  Clase        = rownames(cm_knn$byClass),
+  Precision    = round(cm_knn$byClass[, "Precision"], 4),
+  Recall       = round(cm_knn$byClass[, "Sensitivity"], 4),
+  F1           = round(cm_knn$byClass[, "F1"], 4)
+)
+
+knitr::kable(metricas_clase,
+             caption = "Métricas por clase — KNN Clasificación") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
+```
+
+## Analisis
+El análisis de la matriz de confusión permite evaluar dónde el modelo acierta y dónde falla 
+
+Efectividad general (Accuracy):
+
+El modelo logra una proporción aceptable de clasificaciones correctas, lo que indica que KNN captura patrones en los datos.
+
+
+Dónde se equivoca más:
+
+Generalmente, los errores ocurren entre clases adyacentes (por ejemplo, barata ↔ media o media ↔ cara). Esto es esperable porque las propiedades cercanas en precio tienen características similares.
+
+
+Dónde se equivoca menos:
+
+El modelo suele distinguir mejor entre extremos (barata vs cara), ya que sus características son más diferenciadas.
+
+
+Importancia de los errores:
+
+Confundir media con barata puede implicar subestimar ingresos.
+
+Confundir cara con media puede afectar decisiones de inversión.
+
+
+Por lo tanto, no todos los errores tienen el mismo impacto en el negocio.
+
+
+Conclusión:
+
+El modelo es útil, pero su desempeño se ve limitado en zonas donde las clases se solapan.
