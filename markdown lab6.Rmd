@@ -806,3 +806,148 @@ cat(sprintf("Mejor valor de p (clasificación): %d\n", mejor_p_clf))
 
 La métrica resaltada en verde en cada tabla es la que produjo el mejor desempeño. En la mayoría de problemas con variables numéricas escaladas, la **distancia de Manhattan (p = 1)** o la **Euclidiana (p = 2)** suelen ser las más eficientes. Las variables predictoras del dataset son numéricas pero de naturaleza heterogénea (conteos discretos y ratios). La distancia de Manhattan trata cada dimensión de forma aditiva e independiente, lo que es coherente con esta heterogeneidad. Valores de p mayores a 2 amplifican las diferencias en la dimensión más extrema, lo que en presencia de ruido empeora la predicción.
 
+# Comparación final con árbol de decisión, Random Forest y Naive Bayes
+
+```{r comparacion_completa_clf}
+set.seed(123)
+
+t0 <- Sys.time()
+modelo_arbol_clf <- rpart(precio_cat ~ . - price,
+                          data = train_cat, method = "class",
+                          control = rpart.control(xval = 10))
+cp_opt_clf <- modelo_arbol_clf$cptable[which.min(
+                modelo_arbol_clf$cptable[, "xerror"]), "CP"]
+modelo_arbol_clf <- prune(modelo_arbol_clf, cp = cp_opt_clf)
+t_arbol <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+pred_arbol_clf <- predict(modelo_arbol_clf, newdata = test_cat, type = "class")
+cm_arbol_clf   <- confusionMatrix(pred_arbol_clf, test_cat$precio_cat)
+
+set.seed(123)
+idx_rf <- sample(seq_len(nrow(train_cat)), size = min(10000, nrow(train_cat)))
+train_rf <- train_cat[idx_rf, ]
+
+t0 <- Sys.time()
+modelo_rf <- randomForest(precio_cat ~ . - price,
+                          data = train_rf, ntree = 100)
+t_rf <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+pred_rf <- predict(modelo_rf, newdata = test_cat)
+cm_rf   <- confusionMatrix(pred_rf, test_cat$precio_cat)
+
+t0 <- Sys.time()
+modelo_nb_t <- naiveBayes(precio_cat ~ . - price, data = train_cat)
+t_nb <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+pred_nb_t <- predict(modelo_nb_t, newdata = test_cat)
+cm_nb_t   <- confusionMatrix(pred_nb_t, test_cat$precio_cat)
+
+t0 <- Sys.time()
+set.seed(123)
+modelo_knn_final <- train(
+  precio_cat ~ .,
+  data      = train_cat_tune,
+  method    = "kknn",
+  trControl = trainControl(method = "cv", number = 3),
+  tuneGrid  = modelo_knn_tune_clf$bestTune,
+  metric    = "Accuracy"
+)
+t_knn <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+
+pred_knn_final <- predict(modelo_knn_final, newdata = test_cat_clf)
+cm_knn_final   <- confusionMatrix(pred_knn_final, test_cat_clf$precio_cat)
+```
+
+```{r tabla_final_clf}
+extraer_metricas <- function(cm, nombre, tiempo) {
+  data.frame(
+    Modelo     = nombre,
+    Accuracy   = round(cm$overall["Accuracy"], 4),
+    Kappa      = round(cm$overall["Kappa"],    4),
+    F1_macro   = round(mean(cm$byClass[, "F1"], na.rm = TRUE), 4),
+    Sens_media = round(mean(cm$byClass[, "Sensitivity"], na.rm = TRUE), 4),
+    Tiempo_seg = round(tiempo, 3)
+  )
+}
+
+tabla_final_clf <- rbind(
+  extraer_metricas(cm_arbol_clf, "Árbol de Decisión", t_arbol),
+  extraer_metricas(cm_rf,        "Random Forest",     t_rf),
+  extraer_metricas(cm_nb_t,      "Naive Bayes",       t_nb),
+  extraer_metricas(cm_knn_final, "KNN Tuneado",       t_knn)
+)
+
+mejor_final_idx <- which.max(tabla_final_clf$Accuracy)
+
+knitr::kable(tabla_final_clf,
+             col.names = c("Modelo","Accuracy","Kappa","F1 macro",
+                           "Sens. media","Tiempo (s)"),
+             caption   = "Tabla 7. Comparación final — modelos de clasificación",
+             align     = c("l","r","r","r","r","r")) %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) %>%
+  row_spec(mejor_final_idx, bold = TRUE, color = "white",
+           background = "#1a9641")
+```
+
+```{r grafico_final_clf}
+tabla_long <- tabla_final_clf %>%
+  tidyr::pivot_longer(cols = c(Accuracy, Kappa, F1_macro, Sens_media),
+                      names_to = "Metrica", values_to = "Valor")
+
+ggplot(tabla_long, aes(x = Metrica, y = Valor, fill = Modelo)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = round(Valor, 3)),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 2.8) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Comparación de métricas — todos los modelos de clasificación",
+       x = NULL, y = "Valor", fill = "Modelo") +
+  theme_minimal(base_size = 12) +
+  expand_limits(y = 1.05)
+```
+
+```{r grafico_tiempos}
+ggplot(tabla_final_clf, aes(x = reorder(Modelo, Tiempo_seg),
+                            y = Tiempo_seg, fill = Modelo)) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  geom_text(aes(label = sprintf("%.2fs", Tiempo_seg)),
+            hjust = -0.1, size = 3.2) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title    = "Tiempo de entrenamiento por modelo",
+       subtitle = "Menor tiempo = mayor eficiencia computacional",
+       x = NULL, y = "Tiempo (segundos)") +
+  theme_minimal(base_size = 12) +
+  expand_limits(y = max(tabla_final_clf$Tiempo_seg) * 1.18)
+```
+
+```{r tabla_tiempos}
+tiempos <- tabla_final_clf %>% select(Modelo, Tiempo_seg) %>% arrange(Tiempo_seg)
+
+knitr::kable(tiempos,
+             col.names = c("Modelo","Tiempo (s)"),
+             caption   = "Tiempos de entrenamiento ordenados (más rápido a más lento)",
+             align     = c("l","r")) %>%
+  kable_styling(bootstrap_options = c("striped","condensed"), full_width = FALSE) %>%
+  row_spec(which.max(tiempos$Tiempo_seg), bold = TRUE, background = "#fee090")
+```
+
+```{r conclusion_final, echo=FALSE}
+mejor_modelo_final <- tabla_final_clf$Modelo[mejor_final_idx]
+acc_mejor <- tabla_final_clf$Accuracy[mejor_final_idx]
+cat(sprintf("Mejor modelo de clasificación: %s\n", mejor_modelo_final))
+cat(sprintf("Accuracy: %.4f\n", acc_mejor))
+```
+
+De los cuatro algoritmos evaluados, el modelo resaltado en verde en la Tabla 7 es el que clasifica con mayor precisión las categorías de precio sobre el conjunto de prueba.
+
+**Random Forest** suele destacar porque combina múltiples árboles decorrelacionados que reducen la varianza sin aumentar el sesgo, capturando relaciones no lineales y de interacción. Sin embargo, tiene el mayor costo computacional durante el entrenamiento.
+
+**KNN Tuneado** ofrece un balance entre interpretabilidad y desempeño. Su limitación principal es el costo de predicción, que escala con el tamaño del conjunto de entrenamiento.
+
+**Árbol de Decisión** es el más rápido y el más interpretable, pero tiende a mayor varianza; la poda con validación cruzada mitiga el sobreajuste.
+
+**Naive Bayes** es el modelo más simple y más rápido, pero la asunción de independencia entre variables predictoras lo penaliza cuando las variables están correlacionadas.
+
+La elección del modelo definitivo depende del contexto de negocio: si se prioriza la precisión, Random Forest o KNN tuneado son preferibles; si se prioriza la interpretabilidad y la velocidad, el Árbol de Decisión es una opción sólida.
