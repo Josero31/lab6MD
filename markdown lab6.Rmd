@@ -809,3 +809,4 @@ Reduce el riesgo de sobreajuste
 Proporciona una selección más confiable del hiperparámetro k
 
 Mejora la estabilidad del modelo
+
